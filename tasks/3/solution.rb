@@ -1,141 +1,119 @@
-class CommandParserBase
-  def initialize(command_name)
-    @command_name = command_name
-    @operations = []
-    @arguments = []
-    @options = {}
-    @options_with_params = {}
-  end
-
-  protected
-  def handle_option_with_param(command_runner, name)
-    if name.include? "="
-      option = (name.split "=")[0]
-      argument = (name.split "=")[1]
-    else
-      option = @options_with_params[name.slice 0, 2]
-      argument = name.slice 2, name.size
+class CommandParser
+  class BooleanOption
+    def initialize(short, long, description, handler)
+      @short = short
+      @long = long
+      @description = description
+      @handler = handler
     end
-    @options_with_params[option]["block"].call command_runner, argument
-  end
 
-  def handle_option_without_param(command_runner, name)
-    name = @options[name] unless full_name_option? name
-    @options[name]["block"].call command_runner, true
-  end
+    def can_handle?(option_arg)
+      option_arg == "-#{@short}" || option_arg == "--#{@long}"
+    end
 
-  def handle_option(command_runner, name)
-    if with_param? name
-      handle_option_with_param command_runner, name
-    else
-      handle_option_without_param command_runner, name
+    def handle(runner, _)
+      @handler.call(runner, true)
+    end
+
+    def help
+      "-#{@short}, --#{@long} #{@description}"
     end
   end
-end
 
-class CommandParser < CommandParserBase
-  def initialize(command_name)
-    super(command_name)
-  end
+  class OptionWithParameter
+    def initialize(short, long, description, parameter, handler)
+      @short = short
+      @long = long
+      @description = description
+      @parameter = parameter
+      @handler = handler
+    end
 
-  def argument(file_name, &block)
-    @operations << block
-    @arguments << file_name
-  end
+    def can_handle?(argument)
+      argument.start_with?(short_prefix) || argument.start_with?(long_prefix)
+    end
 
-  def option(short_name, full_name, description, &block)
-    option = {}
-    add_options(option, @options, short_name, full_name, description, &block)
-  end
+    def handle(runner, argument)
+      @handler.call(runner, value(argument))
+    end
 
-  def option_with_parameter(short_name, full_name,
-                            description, placeholder, &block
-                           )
-    option_with_param = { "placeholder" => placeholder }
-    add_options(
-      option_with_param, @options_with_params,
-      short_name, full_name, description, &block
-    )
-  end
+    def help
+      "#{short_prefix}, #{long_prefix}#{@parameter} #{@description}"
+    end
 
-  def parse(command_runner, argv)
-    argument_index = 0
-    argv.each_index do |index|
-      if option? argv[index]
-        handle_option command_runner, argv[index]
-      else
-        @operations[argument_index].call command_runner, argv[index]
-        argument_index += 1
+    private
+
+    def short_prefix
+      "-#{@short}"
+    end
+
+    def long_prefix
+      "--#{@long}="
+    end
+
+    def value(argument)
+      if argument.start_with?(short_prefix)
+        argument[short_prefix.size..-1]
+      elsif argument.start_with?(long_prefix)
+        argument[long_prefix.size..-1]
       end
     end
   end
 
-  def help
-    CommandParserHelper.new(
-      @command_name, @arguments, @options, @options_with_params
-    ).help
-  end
-
-  private
-  def option?(name)
-    name.start_with? "-"
-  end
-
-  def full_name_option?(name)
-    name.start_with? "--"
-  end
-
-  def with_param?(name)
-    (name.include? "=") || (@options.key? (name.slice 0, 2))
-  end
-
-  def add_options(current_option, all_options, short_name,
-                  full_name, description, &block
-                 )
-    current_option["short_name"] = "-" + short_name
-    current_option["full_name"] = "--" + full_name
-    current_option["description"] = description
-    current_option["block"] = block
-
-    all_options["-" + short_name] = "--" + full_name
-    all_options["--" + full_name] = current_option
-  end
-end
-
-class CommandParserHelper
-  def initialize(command_name, arguments, options, options_with_params)
+  def initialize(command_name)
     @command_name = command_name
-    @arguments = arguments
-    @options = options
-    @options_with_params = options_with_params
+    @argument_names = []
+    @argument_handlers = []
+    @options = []
+  end
+
+  def argument(name, &block)
+    @argument_names << name
+    @argument_handlers << block
+  end
+
+  def option(short, long, description, &block)
+    @options << BooleanOption.new(short, long, description, block)
+  end
+
+  def option_with_parameter(short, long, description, parameter, &block)
+    @options << OptionWithParameter.new(
+      short, long, description, parameter, block
+    )
+  end
+
+  def parse(runner, argv)
+    option_arguments = argv.select { |argument| argument.start_with?('-') }
+    arguments = argv - option_arguments
+
+    option_arguments.each do |argument|
+      option_for_argument(argument).handle(runner, argument)
+    end
+
+    @argument_handlers.zip(arguments).each do |handler, option|
+      handler.call(runner, option)
+    end
   end
 
   def help
-    result = "Usage: #{@command_name} ["
-    @arguments.each { |arg| result += arg }
-    result += "]\n    "
-    result += options_help
-    result += options_with_params_help
-    result
+    help_message = "Usage: #{@command_name}"
+    help_message << " #{arguments_help}" unless @argument_names.empty?
+    help_message << "\n#{options_help}" unless @options.empty?
+
+    help_message
   end
 
   private
-  def options_help
-    result = ""
-    @options.keys.each_slice(2) do |pair|
-      result += "#{pair[0]}, #{pair[1]} "
-      result += "#{@options[pair[1]]['description']}\n    "
-    end
-    result
+
+  def option_for_argument(argument)
+    @options.find { |option| option.can_handle?(argument) }
   end
 
-  def options_with_params_help
-    result = ""
-    @options_with_params.keys.each_slice(2) do |pair|
-      result += "#{pair[0]}, #{pair[1]}="
-      result += "#{@options_with_params[pair[1]]['placeholder']} "
-      result += "#{@options_with_params[pair[1]]['description']}\n"
-    end
-    result
+  def arguments_help
+    @argument_names.map { |name| "[#{name}]" }.join(' ')
+  end
+
+  def options_help
+    @options.map { |option| "    #{option.help}" }.join("\n")
   end
 end
