@@ -1,10 +1,10 @@
 module DataModelUtilities
   def save
-    if @data_store.include? @settings
+    if self.class.data_store.include? @settings
       update_store
     else
-      create_instance_id
-      @data_store.create(@settings)
+      create_instance_id(self.class)
+      self.class.data_store.create(@settings)
     end
     self
   end
@@ -38,9 +38,9 @@ module DataModelUtilities
     @data_store.update(@settings[:id], updates)
   end
 
-  def create_instance_id
-    @id = @last_id
-    @last_id += 1
+  def create_instance_id class_name
+    @id = class_name.class_variable_get(last_id)
+    class_name.last_id += 1
     @settings[:id] = @id
   end
 end
@@ -48,7 +48,11 @@ end
 module DataModelErrors
   class DeleteUnsavedRecordError < ::StandardError
   end
-  class UnknownAttributeError < ::StandardError
+
+  class UnknownAttributeError < ArgumentError
+    def initialize(attribute_name)
+      super "Unknown attribute #{attribute_name}"
+    end
   end
 end
 
@@ -64,6 +68,7 @@ module DataModelMethods
 
   def data_store(store = nil)
     @data_store = store if store
+    @data_store
   end
 
   def where(entities = {})
@@ -74,8 +79,7 @@ module DataModelMethods
           result << self.new(setting) && result
         end
       else
-        raise DataModel::UnknownAttributeError, "Unknown attribute
-                         #{(entities.keys - @attributes.keys)[0]}."
+        raise DataModel::UnknownAttributeError.new((entities.keys - @attributes.keys)[0])
       end
     end
   end
@@ -111,6 +115,7 @@ class DataModel
     end
     self
   end
+
   extend DataModelMethods
 end
 
@@ -180,3 +185,13 @@ class HashStore < BaseStore
     end
   end
 end
+
+class User < DataModel
+  attributes :name, :email
+  data_store ArrayStore.new
+end
+
+record = User.new(name: 'Ivan', email: 'Ivanov')
+record.save
+
+expect(User.find_by_name('Ivan').map(&:id)).to eq [record.id]
